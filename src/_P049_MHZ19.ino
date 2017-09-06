@@ -24,26 +24,117 @@ boolean Plugin_049_init = false;
 boolean Plugin_049_ABC_Disable = false;
 boolean Plugin_049_ABC_MustApply = false;
 
-#include <SoftwareSerial.h>
-SoftwareSerial *Plugin_049_SoftSerial;
-
-// 9-bytes CMD PPM read command
-byte mhzCmdReadPPM[9] = {0xFF,0x01,0x86,0x00,0x00,0x00,0x00,0x00,0x79};
-byte mhzResp[9];    // 9 bytes bytes response
-byte mhzCmdCalibrateZero[9] = {0xFF,0x01,0x87,0x00,0x00,0x00,0x00,0x00,0x78};
-byte mhzCmdABCEnable[9] = {0xFF,0x01,0x79,0xA0,0x00,0x00,0x00,0x00,0xE6};
-byte mhzCmdABCDisable[9] = {0xFF,0x01,0x79,0x00,0x00,0x00,0x00,0x00,0x86};
-byte mhzCmdReset[9] = {0xFF,0x01,0x8d,0x00,0x00,0x00,0x00,0x00,0x72};
-byte mhzCmdMeasurementRange1000[9] = {0xFF,0x01,0x99,0x00,0x00,0x00,0x03,0xE8,0x7B};
-byte mhzCmdMeasurementRange2000[9] = {0xFF,0x01,0x99,0x00,0x00,0x00,0x07,0xD0,0x8F};
-byte mhzCmdMeasurementRange3000[9] = {0xFF,0x01,0x99,0x00,0x00,0x00,0x0B,0xB8,0xA3};
-byte mhzCmdMeasurementRange5000[9] = {0xFF,0x01,0x99,0x00,0x00,0x00,0x13,0x88,0xCB};
-
 enum
 {
   ABC_enabled  = 0x01,
   ABC_disabled = 0x02
 };
+
+#include <SoftwareSerial.h>
+SoftwareSerial *Plugin_049_SoftSerial;
+
+byte mhzData[9] ={0, 0, 0, 0, 0, 0, 0, 0, 0};    // 9 bytes bytes command
+byte mhzResp[9];    // 9 bytes bytes response
+
+enum {
+  mhzReadPPM = 0,
+  mhzCalibrateZero,
+  mhzABCEnable,
+  mhzABCDisable,
+  mhzReset,
+  mhzMeasurementRange1000,
+  mhzMeasurementRange2000,
+  mhzMeasurementRange3000,
+  mhzMeasurementRange5000,
+  mhzUnknownCommand
+};
+
+boolean Plugin_049_parseCommand(const String& command, byte &commandEnum) {
+  commandEnum = mhzUnknownCommand;
+  if (command == F("mhzcalibratezero")) commandEnum = mhzCalibrateZero;
+  if (command == F("mhzreset")) commandEnum = mhzReset;
+  if (command == F("mhzabcenable")) commandEnum = mhzABCEnable;
+  if (command == F("mhzabcdisable")) commandEnum = mhzABCDisable;
+  if (command == F("mhzmeasurementrange1000")) commandEnum = mhzMeasurementRange1000;
+  if (command == F("mhzmeasurementrange2000")) commandEnum = mhzMeasurementRange2000;
+  if (command == F("mhzmeasurementrange3000")) commandEnum = mhzMeasurementRange3000;
+  if (command == F("mhzmeasurementrange5000")) commandEnum = mhzMeasurementRange5000;
+  return commandEnum != mhzUnknownCommand;
+}
+
+unsigned int Plugin_049_getMeasurementRange(byte command) {
+  switch (command) {
+    case mhzMeasurementRange1000: return 1000;
+    case mhzMeasurementRange2000: return 2000;
+    case mhzMeasurementRange3000: return 3000;
+    case mhzMeasurementRange5000: return 5000;
+  }
+  return 0;
+}
+
+boolean Plugin_049_executeCommand(byte command) {
+  String logString = F("MHZ19: ");
+  boolean showLog = true;
+  memset(mhzData, 0, sizeof(mhzData));
+  mhzData[0] = 0xFF; // Starting Byte
+  mhzData[1] = 0x01; // Sensor Number
+  unsigned int byte6_7 = 0;
+  switch (command)
+  {
+    case mhzReadPPM:
+      mhzData[2] = 0x86;
+      showLog = false;
+      break;
+    case mhzCalibrateZero:
+      mhzData[2] = 0x87;
+      logString += F("Calibrated zero point!");
+      break;
+    case mhzReset:
+      mhzData[2] = 0x8d;
+      logString += F("Sent sensor reset!");
+      break;
+    case mhzABCEnable:
+      mhzData[2] = 0x79;
+      mhzData[3] = 0xA0;
+      logString += F("Sent sensor ABC Enable!");
+      break;
+    case mhzABCDisable:
+      mhzData[2] = 0x79;
+      mhzData[3] = 0x00;
+      logString += F("Sent sensor ABC Disable!");
+      break;
+    case mhzMeasurementRange1000:
+    case mhzMeasurementRange2000:
+    case mhzMeasurementRange3000:
+    case mhzMeasurementRange5000:
+      mhzData[2] = 0x99;
+      byte6_7 = Plugin_049_getMeasurementRange(command);
+      mhzData[6] = (byte6_7 >> 8) & 0xFF;
+      mhzData[7] = byte6_7 & 0xFF;
+      logString += F("Sent measurement range 0-");
+      logString += byte6_7;
+      logString += F("PPM!");
+      break;
+    default:
+      return false;
+  }
+  // Add CRC
+  byte crc = 0;
+  for (int i = 1; i < 8; i++) crc += mhzData[i];
+  crc = 255 - crc;
+  crc++;
+  mhzData[8] = crc;
+  // Write the command
+  int nbBytesSent = Plugin_049_SoftSerial->write(mhzData, 9);
+  if (nbBytesSent != 9) {
+    logString = F("MHZ19: Error, nb bytes sent != 9 : ");
+    logString += nbBytesSent;
+    addLog(LOG_LEVEL_INFO, logString);
+    return false;
+  }
+  if (showLog) addLog(LOG_LEVEL_INFO, logString);
+  return true;
+}
 
 boolean Plugin_049(byte function, struct EventStruct *event, String& string)
 {
@@ -129,64 +220,13 @@ boolean Plugin_049(byte function, struct EventStruct *event, String& string)
     case PLUGIN_WRITE:
       {
         String command = parseString(string, 1);
-
-        if (command == F("mhzcalibratezero"))
-        {
-          Plugin_049_SoftSerial->write(mhzCmdCalibrateZero, 9);
-          addLog(LOG_LEVEL_INFO, F("MHZ19: Calibrated zero point!"));
-          success = true;
-        }
-
-        if (command == F("mhzreset"))
-        {
-          Plugin_049_SoftSerial->write(mhzCmdReset, 9);
-          addLog(LOG_LEVEL_INFO, F("MHZ19: Sent sensor reset!"));
-          success = true;
-        }
-
-        if (command == F("mhzabcenable"))
-        {
-          Plugin_049_SoftSerial->write(mhzCmdABCEnable, 9);
-          addLog(LOG_LEVEL_INFO, F("MHZ19: Sent sensor ABC Enable!"));
-          success = true;
-        }
-
-        if (command == F("mhzabcdisable"))
-        {
-          Plugin_049_SoftSerial->write(mhzCmdABCDisable, 9);
-          addLog(LOG_LEVEL_INFO, F("MHZ19: Sent sensor ABC Disable!"));
-          success = true;
-        }
-
-        if (command == F("mhzmeasurementrange1000"))
-        {
-          Plugin_049_SoftSerial->write(mhzCmdMeasurementRange1000, 9);
-          addLog(LOG_LEVEL_INFO, F("MHZ19: Sent measurement range 0-1000PPM!"));
-          success = true;
-        }
-
-        if (command == F("mhzmeasurementrange2000"))
-        {
-          Plugin_049_SoftSerial->write(mhzCmdMeasurementRange2000, 9);
-          addLog(LOG_LEVEL_INFO, F("MHZ19: Sent measurement range 0-2000PPM!"));
-          success = true;
-        }
-
-        if (command == F("mhzmeasurementrange3000"))
-        {
-          Plugin_049_SoftSerial->write(mhzCmdMeasurementRange3000, 9);
-          addLog(LOG_LEVEL_INFO, F("MHZ19: Sent measurement range 0-3000PPM!"));
-          success = true;
-        }
-
-        if (command == F("mhzmeasurementrange5000"))
-        {
-          Plugin_049_SoftSerial->write(mhzCmdMeasurementRange5000, 9);
-          addLog(LOG_LEVEL_INFO, F("MHZ19: Sent measurement range 0-5000PPM!"));
-          success = true;
+        byte commandEnum = mhzUnknownCommand;
+        if (Plugin_049_parseCommand(command, commandEnum)) {
+          if (Plugin_049_executeCommand(commandEnum)) {
+            success = true;
+          }
         }
         break;
-
       }
 
     case PLUGIN_READ:
@@ -194,17 +234,10 @@ boolean Plugin_049(byte function, struct EventStruct *event, String& string)
 
         if (Plugin_049_init)
         {
-          //send read PPM command
-          int nbBytesSent = Plugin_049_SoftSerial->write(mhzCmdReadPPM, 9);
-          if (nbBytesSent != 9) {
-            String log = F("MHZ19: Error, nb bytes sent != 9 : ");
-              log += nbBytesSent;
-              addLog(LOG_LEVEL_INFO, log);
-          }
-
-          // get response
+          Plugin_049_executeCommand(mhzReadPPM);
+          // clear previous content of response
           memset(mhzResp, 0, sizeof(mhzResp));
-
+          // Start reading response
           long start = millis();
           int counter = 0;
           while (((millis() - start) < PLUGIN_READ_TIMEOUT) && (counter < 9)) {
@@ -249,7 +282,7 @@ boolean Plugin_049(byte function, struct EventStruct *event, String& string)
                   addLog(LOG_LEVEL_ERROR, log);
                   break;
                 } else {
-                 crcshift = Plugin_049_SoftSerial->read();
+                  crcshift = Plugin_049_SoftSerial->read();
                 }
              }
              success = false;
@@ -306,16 +339,13 @@ boolean Plugin_049(byte function, struct EventStruct *event, String& string)
                 if (Plugin_049_ABC_MustApply) {
                   // Send ABC enable/disable command based on the desired state.
                   if (Plugin_049_ABC_Disable) {
-                    Plugin_049_SoftSerial->write(mhzCmdABCDisable, 9);
-                    addLog(LOG_LEVEL_INFO, F("MHZ19: Sent sensor ABC Disable!"));
+                    Plugin_049_executeCommand(mhzABCDisable);
                   } else {
-                    Plugin_049_SoftSerial->write(mhzCmdABCEnable, 9);
-                    addLog(LOG_LEVEL_INFO, F("MHZ19: Sent sensor ABC Enable!"));
+                    Plugin_049_executeCommand(mhzABCEnable);
                   }
                   Plugin_049_ABC_MustApply = false;
                 }
                 success = true;
-
               }
 
               // Log values in all cases
